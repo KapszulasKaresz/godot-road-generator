@@ -35,8 +35,26 @@ var incoming_roads_ordered : Array[RoadPoint]
 			
 @export var manager :RoadManager = null 
 
+@export var shoulder_uv_begin : float = 0.1:
+	get:
+		return shoulder_uv_begin
+	set(value):
+		shoulder_uv_begin = value
+		_generate_mesh()
+
+@export var shoulder_uv_end : float = 0.125:
+	get:
+		return shoulder_uv_end
+	set(value):
+		shoulder_uv_end = value
+		_generate_mesh()
+
 var outline_points: PackedVector3Array = []
 var final_outline_points: PackedVector3Array = []
+
+var outer_outline_points : PackedVector3Array = []
+var final_outer_outline_points : Array[PackedVector3Array] = []
+
 var center_point : Vector3
 var mesh_instance := MeshInstance3D.new()
 
@@ -51,6 +69,10 @@ func _ready() -> void:
 func _generate_mesh() -> void:
 	outline_points.clear()
 	final_outline_points.clear()
+	
+	outer_outline_points.clear()
+	final_outer_outline_points.clear()
+	
 	incoming_roads_ordered.clear()
 	center_point = Vector3(0,0,0)
 	if incoming_roads.size() >= 2:
@@ -64,16 +86,22 @@ func _generate_mesh() -> void:
 			var pos = road.position - center_point
 			var right :Vector3 = road.basis.x
 			var left :Vector3 = -road.basis.x
-			var point_left :Vector3 = pos + left * (road.lane_width * road.lanes.size() / 2.0 + road.shoulder_width_l)
-			var point_right :Vector3 = pos + right * (road.lane_width * road.lanes.size() / 2.0 + road.shoulder_width_r)
+			var point_left :Vector3 = pos + left * (road.lane_width * road.lanes.size() / 2.0)
+			var point_right :Vector3 = pos + right * (road.lane_width * road.lanes.size() / 2.0)
 			var angle_left := atan2(point_left.z, point_left.x)
 			var angle_right := atan2(point_right.z, point_right.x)
 			if angle_left > angle_right:
 				outline_points.append(point_left)
 				outline_points.append(point_right)
+				
+				outer_outline_points.append(point_left + left * road.shoulder_width_l)
+				outer_outline_points.append(point_right + right * road.shoulder_width_r)
 			else:
 				outline_points.append(point_right)
 				outline_points.append(point_left)
+				
+				outer_outline_points.append(point_right + right * road.shoulder_width_r)
+				outer_outline_points.append(point_left + left * road.shoulder_width_l)
 		if enable_smoothing:
 			for i in range(incoming_roads_ordered.size()):
 				var index_a = 2 * i + 1
@@ -84,9 +112,35 @@ func _generate_mesh() -> void:
 				var point_count : int = a.distance_to(b) * smoothing_resolution
 				var smoothened_points = bezier_quadratic(a, c, b, point_count + 1)
 				final_outline_points.append_array(smoothened_points)
+				
+				var outer_a = outer_outline_points[index_a]
+				var outer_b = outer_outline_points[index_b]
+				var outer_c = outer_a.lerp(outer_b, 0.5).lerp(Vector3(0,0,0), 0.2)
+				var outer_smoothened_points = bezier_quadratic(outer_a, outer_c, outer_b, point_count + 1)
+				
+				var local_outer_outline_points: PackedVector3Array = []
+				
+				for j in range(smoothened_points.size()):
+					local_outer_outline_points.append(outer_smoothened_points[j])
+					local_outer_outline_points.append(smoothened_points[j])
+				
+				final_outer_outline_points.append(local_outer_outline_points)
 		else:
 			final_outline_points = outline_points.duplicate()
+			for i in range(incoming_roads_ordered.size()):
+				var index_a = 2 * i + 1
+				var index_b = (2 * i + 2) % outline_points.size()
+				var local_outer_outline_points: PackedVector3Array = []
+				local_outer_outline_points.append(outer_outline_points[index_a])
+				local_outer_outline_points.append(outline_points[index_a])
+				
+				local_outer_outline_points.append(outer_outline_points[index_b])
+				local_outer_outline_points.append(outline_points[index_b])
+				
+				final_outer_outline_points.append(local_outer_outline_points)
 		mesh_instance.mesh = create_triangle_fan_mesh(final_outline_points, Vector3(0,0,0))
+		for outlines in final_outer_outline_points:
+			mesh_instance.mesh = create_triangle_strip_mesh(outlines, mesh_instance.mesh)
 	pass
 
 func create_triangle_fan_mesh(outline_points: PackedVector3Array, center_point: Vector3) -> ArrayMesh:
@@ -104,13 +158,41 @@ func create_triangle_fan_mesh(outline_points: PackedVector3Array, center_point: 
 		var p2 := outline_points[(i + 1) % num_points] # wrap around
 
 		# Triangle: center -> p1 -> p2
+		st.set_uv(Vector2(0.5,0.5))
 		st.add_vertex(center_point)
+		st.set_uv(Vector2(0.5,0.5))
 		st.add_vertex(p2)
+		st.set_uv(Vector2(0.5,0.5))
 		st.add_vertex(p1)
 	
 	st.index()
+	st.generate_normals(false)
 	var mesh := st.commit()
 	return mesh
+
+func create_triangle_strip_mesh(outline_points: PackedVector3Array, mesh : ArrayMesh) -> ArrayMesh:
+	if outline_points.size() < 3:
+		return mesh
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+	
+	var outer := true
+	var distance := 0.0
+	var previous_outer := outer_outline_points[0]
+	
+	for point in outline_points:
+		if outer:
+			distance += point.distance_to(previous_outer)
+			previous_outer = point
+			st.set_uv(Vector2(shoulder_uv_begin, distance * 0.1))
+		else:
+			st.set_uv(Vector2(shoulder_uv_end, distance * 0.1))
+		outer = !outer
+		st.add_vertex(point)
+		
+	st.generate_normals(false)
+	var out_mesh := st.commit(mesh)
+	return out_mesh
 
 
 func sort_road_points_clockwise(points: Array[RoadPoint], center : Vector3) -> Array[RoadPoint]:
