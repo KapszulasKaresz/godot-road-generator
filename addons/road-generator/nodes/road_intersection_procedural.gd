@@ -117,7 +117,7 @@ func _generate_mesh() -> void:
 				var outer_b = outer_outline_points[index_b]
 				var outer_c = outer_a.lerp(outer_b, 0.5).lerp(Vector3(0,0,0), 0.2)
 				var outer_smoothened_points = bezier_quadratic(outer_a, outer_c, outer_b, point_count + 1)
-				
+					
 				var local_outer_outline_points: PackedVector3Array = []
 				
 				for j in range(smoothened_points.size()):
@@ -180,6 +180,36 @@ func create_triangle_strip_mesh(outline_points: PackedVector3Array, mesh : Array
 	var distance := 0.0
 	var previous_outer := outer_outline_points[0]
 	
+	# --- Compute face normals ---
+	var face_normals := []
+	for i in range(outline_points.size() - 2):
+		var a = outline_points[i]
+		var b = outline_points[i + 1]
+		var c = outline_points[i + 2]
+
+		var edge1 = b - a
+		var edge2 = c - a
+		var n = edge2.cross(edge1)
+
+		# Flip every other normal because triangle strip alternates winding
+		if i % 2 == 1:
+			n = -n
+
+		face_normals.append(n.normalized())
+
+	# --- Compute vertex normals by averaging adjacent face normals ---
+	var vertex_normals := []
+	for i in range(outline_points.size()):
+		var n = Vector3.ZERO
+		if i > 0 and i - 1 < face_normals.size():
+			n += face_normals[i - 1]
+		else:
+			n += face_normals[face_normals.size() - 1]
+		if i < face_normals.size():
+			n += face_normals[i]
+		vertex_normals.append(n.normalized())
+	
+	var index := 0
 	for point in outline_points:
 		if outer:
 			distance += point.distance_to(previous_outer)
@@ -188,9 +218,10 @@ func create_triangle_strip_mesh(outline_points: PackedVector3Array, mesh : Array
 		else:
 			st.set_uv(Vector2(shoulder_uv_end, distance * 0.1))
 		outer = !outer
+		st.set_normal(vertex_normals[index])
 		st.add_vertex(point)
+		index += 1
 		
-	st.generate_normals(false)
 	var out_mesh := st.commit(mesh)
 	return out_mesh
 
