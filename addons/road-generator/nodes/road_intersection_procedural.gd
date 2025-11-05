@@ -88,9 +88,12 @@ func _generate_mesh() -> void:
 			var left :Vector3 = -road.basis.x
 			var point_left :Vector3 = pos + left * (road.lane_width * road.lanes.size() / 2.0)
 			var point_right :Vector3 = pos + right * (road.lane_width * road.lanes.size() / 2.0)
-			var angle_left := atan2(point_left.z, point_left.x)
-			var angle_right := atan2(point_right.z, point_right.x)
-			if angle_left > angle_right:
+			
+			var to_center = -pos.normalized()
+			var dot_1 = road.basis.z.dot(to_center)
+			var dot_2 = (-road.basis.z).dot(to_center)
+			
+			if dot_1 < dot_2:
 				outline_points.append(point_left)
 				outline_points.append(point_right)
 				
