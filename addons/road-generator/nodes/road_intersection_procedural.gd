@@ -4,6 +4,8 @@ extends Node3D
 
 const RoadSegment = preload("res://addons/road-generator/nodes/road_segment.gd")
 
+enum CurveMode {HERMITE, BEZIER_QUADRATIC}
+
 @export var incoming_roads : Array[RoadPoint]:
 		get:
 			return incoming_roads
@@ -25,6 +27,13 @@ var incoming_roads_ordered : Array[RoadPoint]
 		set(value):
 			enable_smoothing = value
 			_generate_mesh()
+
+@export var curve_mode : CurveMode = CurveMode.HERMITE:
+	get:
+		return curve_mode
+	set(value):
+		curve_mode = value
+		_generate_mesh()
 	
 @export var smoothing_resolution : float = 1:
 		get:
@@ -32,7 +41,21 @@ var incoming_roads_ordered : Array[RoadPoint]
 		set(value):
 			smoothing_resolution = value
 			_generate_mesh()
-			
+
+@export var inner_curve_strength : float = 7.0:
+	get:
+		return inner_curve_strength
+	set(value):
+		inner_curve_strength = value
+		_generate_mesh()
+
+@export var outer_curve_strength : float = 5.0:
+	get:
+		return outer_curve_strength
+	set(value):
+		outer_curve_strength = value
+		_generate_mesh()
+
 @export var manager :RoadManager = null 
 
 @export var shoulder_uv_begin : float = 0.1:
@@ -111,16 +134,34 @@ func _generate_mesh() -> void:
 				var index_b = (2 * i + 2) % outline_points.size()
 				var a = outline_points[index_a]
 				var b = outline_points[index_b]
-				var c = a.lerp(b, 0.5).lerp(Vector3(0,0,0), 0.3)
 				var point_count : int = a.distance_to(b) * smoothing_resolution
-				var smoothened_points = bezier_quadratic(a, c, b, point_count + 1)
-				final_outline_points.append_array(smoothened_points)
 				
 				var outer_a = outer_outline_points[index_a]
 				var outer_b = outer_outline_points[index_b]
-				var outer_c = outer_a.lerp(outer_b, 0.5).lerp(Vector3(0,0,0), 0.2)
-				var outer_smoothened_points = bezier_quadratic(outer_a, outer_c, outer_b, point_count + 1)
-					
+				
+				var smoothened_points : PackedVector3Array
+				var outer_smoothened_points : PackedVector3Array
+				match curve_mode:
+					CurveMode.HERMITE:
+						var to_center0 = -(incoming_roads_ordered[i].position - center_point).normalized() 
+						var v0 = incoming_roads_ordered[i].basis.z;
+						if v0.dot(to_center0) < (-v0).dot(to_center0):
+							v0 = -v0
+						
+						var to_center1 = -(incoming_roads_ordered[(i + 1)  % incoming_roads_ordered.size()].position - center_point).normalized()
+						var v1= incoming_roads_ordered[(i + 1)  % incoming_roads_ordered.size()].basis.z;
+						if v1.dot(to_center1) > (-v1).dot(to_center1):
+							v1 = -v1
+						smoothened_points = hermite_curve(a, b, v0 * inner_curve_strength, v1 * inner_curve_strength, point_count + 1)
+						outer_smoothened_points = hermite_curve(outer_a, outer_b, v0 * outer_curve_strength, v1 * outer_curve_strength, point_count + 1)
+					CurveMode.BEZIER_QUADRATIC:
+						var c = a.lerp(b, 0.5).lerp(Vector3(0,0,0), 0.3)
+						smoothened_points = bezier_quadratic(a, c, b, point_count + 1)
+						
+						var outer_c = outer_a.lerp(outer_b, 0.5).lerp(Vector3(0,0,0), 0.2)
+						outer_smoothened_points = bezier_quadratic(outer_a, outer_c, outer_b, point_count + 1)
+				final_outline_points.append_array(smoothened_points)
+				
 				var local_outer_outline_points: PackedVector3Array = []
 				
 				for j in range(smoothened_points.size()):
@@ -161,15 +202,21 @@ func create_triangle_fan_mesh(outline_points: PackedVector3Array, center_point: 
 		var p2 := outline_points[(i + 1) % num_points] # wrap around
 
 		# Triangle: center -> p1 -> p2
+		var edge1 = p1 - center_point
+		var edge2 = p2 - center_point
+		var n = -edge2.cross(edge1)
+		
 		st.set_uv(Vector2(0.5,0.5))
+		st.set_normal(n)
 		st.add_vertex(center_point)
 		st.set_uv(Vector2(0.5,0.5))
+		st.set_normal(n)
 		st.add_vertex(p2)
 		st.set_uv(Vector2(0.5,0.5))
+		st.set_normal(n)
 		st.add_vertex(p1)
 	
 	st.index()
-	st.generate_normals(false)
 	var mesh := st.commit()
 	return mesh
 
@@ -255,6 +302,24 @@ func bezier_quadratic(a: Vector3, c: Vector3, b: Vector3, segments: int) -> Pack
 	for i in range(segments + 1):
 		var t := float(i) / float(segments)
 		var p := a.lerp(c, t).lerp(c.lerp(b, t), t)
+		result.append(p)
+	return result
+	
+func hermite_curve(p0: Vector3, p1: Vector3, t0: Vector3, t1: Vector3, segments: int) -> PackedVector3Array:
+	var result := PackedVector3Array()
+	for i in range(segments + 1):
+		var t := float(i) / float(segments)
+		var t2 := t * t
+		var t3 := t2 * t
+
+		# Hermite basis functions
+		var h00 := 2.0 * t3 - 3.0 * t2 + 1.0
+		var h10 := t3 - 2.0 * t2 + t
+		var h01 := -2.0 * t3 + 3.0 * t2
+		var h11 := t3 - t2
+
+		# Point on the curve
+		var p := (h00 * p0) + (h10 * t0) + (h01 * p1) + (h11 * t1)
 		result.append(p)
 	return result
 
